@@ -1,6 +1,5 @@
 import os
 import numpy as np
-import torch
 from scipy.spatial.transform import Rotation as R
 import cv2
 import json
@@ -14,15 +13,10 @@ from psdf_suction.configs import config, EPSILON, DEVICE
 from psdf_suction.utils import get_orientation
 
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 from psdf_suction.vaccum_cup import VaccumCup
 from avt_grasp_tool.chart_utils import refine_grasp_normal, show_chart, analyse_chart
 import os
-from cv2 import imread
-from pytools import P
 
-from torch import frac
-from xela.XELA import XELA
 from avt_grasp_tool.chart_utils import *
 import numpy as np
 import matplotlib.pyplot as plt
@@ -89,13 +83,15 @@ def get_camera_pose(arm, T_cam_to_tool0):
     T_cam_to_world = T_tool0_to_world @ T_cam_to_tool0
     return T_cam_to_world
 
-def nerf_camera(T_cam_to_world):
+def nerf_camera(config, T_cam_to_world):
     from nerf.run_nerf import run
-    color, depth = run('/home/amax_djh/code/ysl/nerf-pytorch/configs/avt_data_glass_13.txt', T_cam_to_world)
-    return color,depth
+    color, depth, K = run(config, T_cam_to_world)
+    return color, depth, K
 
 
 def main():
+    from xela.XELA import XELA
+
     gcolor = None
     gdepth = None
 
@@ -177,7 +173,7 @@ def main():
             # T_cam_to_world = get_camera_pose(arm, T_cam_to_tool0)
             T_cam_to_world = np.array(cam_pose)
             if gcolor is None:
-                color, depth = nerf_camera(T_cam_to_world)
+                color, depth = nerf_camera('/home/amax_djh/code/ysl/nerf-pytorch/configs/avt_data_glass_13.txt', T_cam_to_world)
                 gcolor = color
                 gdepth = depth
             else:
@@ -392,7 +388,6 @@ def main():
 
 
 def display():
-
     # init analyser
     analyser = VacuumCupAnalyser(radius=config.gripper_radius,
                                  height=config.gripper_height,
@@ -400,117 +395,47 @@ def display():
                                  angle_threshold=config.gripper_angle_threshold)
     print("Analyser initialized")
 
-    # load camera config
-    with open(os.path.join(os.path.dirname(__file__), "../config/cam_info_realsense.json"), 'r') as f:
-        cam_info = json.load(f)
-    cam_intr = np.array(cam_info["K"]).reshape(3, 3)
-    cam_intr[0][2] = cam_intr[0][2] * 5. / 8.
-    cam_intr[1][2] = cam_intr[1][2] * 5. / 8.
-    T_cam_to_tool0 = np.array(cam_info["cam_to_tool0"]).reshape(4, 4)
+    psdf = PSDF(config.volume_shape, config.volume_resolution,
+                device=DEVICE, with_color=True)
+    print("PSDF initialized")
 
-    # VaccumCup Parameter
-    cup_radius = 0.01
-    cup_height = 0.02
-    cup_samples = 8
-    spring_threshold = 0.1
+    T_cam_to_world = np.array(cam_pose)
+    color, depth, K = nerf_camera('/home/ai/codebase/nerf-pytorch/configs/avt_data_glass_13.txt', T_cam_to_world)
 
-    # threshold
-    cam_dist_threshold = 0.3
+    T_cam_to_volume = config.T_world_to_volume @ T_cam_to_world
 
-    # sequential grasping
-    init_pose = config.init_position.tolist() + config.init_orientation.tolist()
-    init_grasp_position = config.init_position.copy()
-    init_grasp_position[2] = config.volume_origin[2]
-    init_grasp_normal = np.array([0, 0, 1])
+    # fuse new data to psdf
+    psdf.fuse(np.copy(depth), K, T_cam_to_volume, color=np.copy(color))
+
+    # flatten to 2D point image
+    point_map, normal_map, variance_map, _ = psdf.flatten()
+
+    point_map[..., 2] = point_map[..., 2]
+    point_map = point_map @ config.T_volume_to_world[:3,:3].T + config.T_volume_to_world[:3, 3]
+
+    # analysis
+    normal_mask = normal_map[..., 2] > np.cos(config.gripper_angle_threshold/180*np.pi)
+    variance_mask = variance_map < 1e-2
+    z_mask = point_map[:, :, 2] > 0.031
+    final_mask = normal_mask * variance_mask * z_mask
+    obj_ids = np.where(final_mask != 0)
+    vision_dict = {"point_cloud": point_map,
+                    "normal": -normal_map}
+    graspable_map = analyser.analyse(vision_dict, obj_ids).astype(np.float32)
+
+    #display
+    fig = plt.figure()
+    ax = fig.add_subplot(231)
+    ax.imshow(depth)
+
+    ax = fig.add_subplot(232)
+    ax.imshow(point_map[..., 2])
+
+    ax = fig.add_subplot(233)
+    ax.imshow(graspable_map)
     
-    # arm move loop
-    while True:
-        # pre-touch
-        psdf = PSDF(config.volume_shape, config.volume_resolution,
-                    device=DEVICE, with_color=True)
-        print("PSDF initialized")
-
-        grasp_position = init_grasp_position
-        grasp_normal = init_grasp_normal
-        distance = 0.4
-        
-        while True:
-            # get camera message
-            # T_cam_to_world = get_camera_pose(arm, T_cam_to_tool0)
-            T_cam_to_world = np.array(cam_pose)
-            color, depth = nerf_camera(T_cam_to_world)
-
-            T_cam_to_volume = config.T_world_to_volume @ T_cam_to_world
-
-            # fuse new data to psdf
-            ts = time.gmtime()
-            psdf.fuse(np.copy(depth), cam_intr,
-                      T_cam_to_volume, color=np.copy(color))
-            # print("fuse time %f" % (time.gmtime()-ts))
-
-            v,f = psdf.get_point_cloud(T_cam_to_world)
-            # mp_display_point(v)
-
-            # flatten to 2D point image
-            ts = time.gmtime()
-            point_map, normal_map, variance_map, _ = psdf.flatten()
-            point_mask = point_map[..., 2] > 0.031
-
-            point_map[..., 2] = point_map[..., 2]
-            point_map = point_map @ config.T_volume_to_world[:3,
-                                                             :3].T + config.T_volume_to_world[:3, 3]
-
-
-            # plt.imshow(depth)
-            # plt.show()
-            # plt.imshow(point_map)
-            # plt.show()
-
-            # analysis
-            normal_mask = normal_map[..., 2] > np.cos(
-                config.gripper_angle_threshold/180*np.pi)
-            variance_mask = variance_map < 1e-2
-            # z_mask = point_map[:, :, 2] > 0.02
-            final_mask = normal_mask * variance_mask * point_mask  # * z_mask
-            obj_ids = np.where(final_mask != 0)
-            vision_dict = {"point_cloud": point_map,
-                           "normal": -normal_map}
-            graspable_map = analyser.analyse(
-                vision_dict, obj_ids).astype(np.float32)
-
-            #display
-            fig = plt.figure()
-            ax = fig.add_subplot(231)
-            ax.imshow(depth)
-
-            ax = fig.add_subplot(232)
-            ax.imshow(point_map[..., 2])
-
-            ax = fig.add_subplot(233)
-            ax.imshow(graspable_map)
-            
-            plt.show()
-            #display
-
-            # update grasp pose
-            score = compute_score(graspable_map, point_map,
-                                  normal_map, grasp_position)
-            idx = np.argmax(score)
-            i, j = idx // config.volume_shape[0], idx % config.volume_shape[1]
-            grasp_position = point_map[i, j]
-            grasp_normal = normal_map[i, j]
-
-            # move
-            grasp_orientation = get_orientation(grasp_normal)
-            grasp_orientation = (R.from_quat(config.init_orientation) *
-                                 R.from_quat(grasp_orientation)).as_quat()
-            T_cam2world = np.eye(4)
-            T_cam2world[:3, :3] = R.from_quat(grasp_orientation).as_matrix()
-            T_cam2world[:3, 3] = grasp_position
-            T_tool02world = T_cam2world @ np.linalg.inv(T_cam_to_tool0)
-            move_position = T_tool02world[:3, 3] + grasp_normal * distance
-            move_orientation = R.from_matrix(T_tool02world[:3, :3]).as_quat()
-            move_pose = move_position.tolist() + move_orientation.tolist()
+    plt.show()
+    #display
 
 def mp_display_point(verts):
   plt.style.use('_mpl-gallery')
@@ -536,5 +461,5 @@ def o3d_display_point(verts):
   open3d.visualization.draw_geometries([pcd, mesh_frame])
 
 if __name__ == '__main__':
-    main()
-    # display()
+    # main()
+    display()

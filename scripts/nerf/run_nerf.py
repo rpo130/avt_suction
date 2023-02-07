@@ -544,7 +544,7 @@ def run(config_path, T_c2w):
     torch.set_default_tensor_type('torch.cuda.FloatTensor')
     rgb,_,depth,dexdepth = render_single(args, T_c2w, K, hwf)
 
-    return rgb, dexdepth
+    return rgb, dexdepth, K
 
 def run_test(config_path):
     basedir = pathlib.Path(config_path).resolve().parent.parent

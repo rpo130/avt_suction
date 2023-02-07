@@ -1,14 +1,12 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-import rospy
 import geometry_msgs.msg
-
 import moveit_py3.srv
-
 
 class UR5Commander(object):
     def __init__(self):
+        import rospy
         rospy.wait_for_service("moveit_py3/set_pose")
         self.set_pose_srv = rospy.ServiceProxy("moveit_py3/set_pose", moveit_py3.srv.SetPose)
         rospy.wait_for_service("moveit_py3/get_pose")
