@@ -240,7 +240,7 @@ def create_nerf(args):
     else:
         ckpts = [os.path.join(basedir, expname, f) for f in sorted(os.listdir(os.path.join(basedir, expname))) if 'tar' in f]
 
-    print('Found ckpts', ckpts)
+    # print('Found ckpts', ckpts)
     if len(ckpts) > 0:
         ckpt_path = ckpts[-1]
     print('Reloading from', ckpt_path)
@@ -490,15 +490,23 @@ def config_parser():
     return parser
 
 
-def render_single(args, render_pose, K, hwf,near=0.01,far=1.):
+def render_single(args, render_pose, K, hwf, near=0.1, far=1.):
+    render_poses = np.array([render_pose])
+    rgbs, disps, depths, dex_depths = render_batch(args, render_poses, K, hwf, near, far)
+    return rgbs[0], disps[0], depths[0], dex_depths[0]
 
+def render_batch(args, render_poses, K, hwf, near=0.1, far=1):
     #fix poses
-    T_cam_face_to_world = render_pose
+    rps = []
+    for i in render_poses:
+        render_pose = i
+        T_cam_face_to_world = render_pose
 
-    T_img_to_cam_face = np.eye(4) 
-    T_img_to_cam_face[:3, :3] = R.from_euler("xyz", [180, 0, 0], degrees=True).as_matrix()
-    T_cam_to_world = T_cam_face_to_world @ T_img_to_cam_face
-    render_pose = T_cam_to_world
+        T_img_to_cam_face = np.eye(4) 
+        T_img_to_cam_face[:3, :3] = R.from_euler("xyz", [180, 0, 0], degrees=True).as_matrix()
+        T_cam_to_world = T_cam_face_to_world @ T_img_to_cam_face
+        render_pose = T_cam_to_world
+        rps.append(render_pose)
 
     # Create nerf model
     render_kwargs_test = create_nerf(args)
@@ -510,8 +518,7 @@ def render_single(args, render_pose, K, hwf,near=0.01,far=1.):
     render_kwargs_test.update(bds_dict)
 
     # Move testing data to GPU
-    render_poses = np.array([render_pose])
-    render_poses = torch.Tensor(render_poses).to(device)
+    render_poses = torch.Tensor(rps).to(device)
 
     print('RENDER ONLY')
     with torch.no_grad():
@@ -523,9 +530,11 @@ def render_single(args, render_pose, K, hwf,near=0.01,far=1.):
         rgbs, disps, depths, dex_depths = render_path(render_poses, hwf, K, args.chunk, render_kwargs_test, gt_imgs=images, savedir=None, render_factor=args.render_factor)
         print('Done rendering')
 
-        return to8b(rgbs[0]), disps[0], depths[0], dex_depths[0]
+        rgbs = [to8b(i) for i in rgbs]
+        return rgbs, disps, depths, dex_depths
 
-def run(config_path, T_c2w):
+
+def run(config_path, T_c2ws):
     basedir = pathlib.Path(config_path).resolve().parent.parent
 
     parser = config_parser()
@@ -542,9 +551,9 @@ def run(config_path, T_c2w):
 
     hwf, K, imgs, poses = load_avt_data(args.datadir, False)
     torch.set_default_tensor_type('torch.cuda.FloatTensor')
-    rgb,_,depth,dexdepth = render_single(args, T_c2w, K, hwf)
+    rgb,_,depth,dexdepth = render_batch(args, T_c2ws, K, hwf)
 
-    return rgb, dexdepth, K
+    return rgb, depth, dexdepth, K
 
 def run_test(config_path):
     basedir = pathlib.Path(config_path).resolve().parent.parent

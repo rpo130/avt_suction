@@ -20,25 +20,27 @@ import os
 from avt_grasp_tool.chart_utils import *
 import numpy as np
 import matplotlib.pyplot as plt
-#20
+import pathlib
+
+
 cam_pose = np.array([
         [
-          -0.2870953894044174,
-          -0.9579018080648883,
-          -0.0006029002766408765,
-          0.3000561874515848
+          0.00034067232114859083,
+          -0.9999995162455708,
+          -0.0009227410224205568,
+          0.5999780841334658
         ],
         [
-          -0.9579016026985826,
-          0.28709464247217836,
-          0.0010889496126563452,
-          0.0499960947605539
+          -0.9999996541527105,
+          -0.00033997198759511447,
+          -0.000759021414258895,
+          -2.0465263245762755e-05
         ],
         [
-          -0.000870017363486483,
-          0.0008901515543490773,
-          -0.9999992253496988,
-          0.47992855271485463
+          0.000758707340979496,
+          0.0009229992808800722,
+          -0.9999992862174947,
+          0.44998310911919037
         ],
         [
           0.0,
@@ -47,9 +49,6 @@ cam_pose = np.array([
           1.0
         ]
       ])
-
-
-
 
 def compute_score(graspable_map, point_map, normal_map, position_pre):
     # current first
@@ -83,10 +82,29 @@ def get_camera_pose(arm, T_cam_to_tool0):
     T_cam_to_world = T_tool0_to_world @ T_cam_to_tool0
     return T_cam_to_world
 
-def nerf_camera(config, T_cam_to_world):
+def nerf_info(config_path):
+    from nerf.run_nerf import config_parser, load_avt_data
+    basedir = pathlib.Path(config_path).resolve().parent.parent
+
+    parser = config_parser()
+    args = parser.parse_args(f"--config {config_path}")
+
+    if not pathlib.Path(args.datadir).is_absolute():
+        args.datadir = os.path.join(basedir, args.datadir)
+
+    if args.ft_path is not None and not pathlib.Path(args.ft_path).is_absolute():
+        args.ft_path = os.path.join(basedir, args.ft_path)
+
+    if not pathlib.Path(args.basedir).is_absolute():
+        args.basedir = os.path.join(basedir, args.basedir)
+
+    hwf, K, imgs, poses = load_avt_data(args.datadir, False)
+    return hwf,K,imgs,poses
+
+def nerf_camera(config, T_c2ws):
     from nerf.run_nerf import run
-    color, depth, K = run(config, T_cam_to_world)
-    return color, depth, K
+    color, depth, dexdepth, K = run(config, T_c2ws)
+    return color, depth, dexdepth, K
 
 
 def main():
@@ -173,22 +191,22 @@ def main():
             # T_cam_to_world = get_camera_pose(arm, T_cam_to_tool0)
             T_cam_to_world = np.array(cam_pose)
             if gcolor is None:
-                color, depth = nerf_camera('/home/amax_djh/code/ysl/nerf-pytorch/configs/avt_data_glass_13.txt', T_cam_to_world)
+                color, depth, dexdepth, K = nerf_camera('/home/amax_djh/code/ysl/nerf-pytorch/configs/avt_data_glass_13.txt', T_cam_to_world)
                 gcolor = color
-                gdepth = depth
+                gdepth = dexdepth
             else:
                 color,depth = gcolor,gdepth
 
             T_cam_to_volume = config.T_world_to_volume @ T_cam_to_world
 
             # fuse new data to psdf
-            ts = time.gmtime()
+            ts = time.time()
             psdf.fuse(np.copy(depth), cam_intr,
                       T_cam_to_volume, color=np.copy(color))
-            # print("fuse time %f" % (time.gmtime()-ts))
+            print("fuse time %f" % (time.time()-ts))
 
             # flatten to 2D point image
-            ts = time.gmtime()
+            ts = time.time()
             point_map, normal_map, variance_map, _ = psdf.flatten()
             point_map = point_map @ config.T_volume_to_world[:3,
                                                              :3].T + config.T_volume_to_world[:3, 3]
@@ -399,43 +417,65 @@ def display():
                 device=DEVICE, with_color=True)
     print("PSDF initialized")
 
-    T_cam_to_world = np.array(cam_pose)
-    color, depth, K = nerf_camera('/home/ai/codebase/nerf-pytorch/configs/avt_data_glass_13.txt', T_cam_to_world)
-
-    T_cam_to_volume = config.T_world_to_volume @ T_cam_to_world
-
-    # fuse new data to psdf
-    psdf.fuse(np.copy(depth), K, T_cam_to_volume, color=np.copy(color))
+    nerf_config = '/home/amax_djh/code/ysl/nerf-pytorch/configs/avt_data_glass_20230204_8.txt'
+    hwf,K,imgs,poses = nerf_info(nerf_config)
+    render_poses = poses[::5]
+    colors, depths, dexdepths, K = nerf_camera(nerf_config, render_poses)
+    depths = dexdepths
+    for i, p in enumerate(render_poses):
+        T_cam_to_world = p
+        T_cam_to_volume = config.T_world_to_volume @ T_cam_to_world
+        # fuse new data to psdf
+        psdf.fuse(np.copy(depths[i]), K, T_cam_to_volume, color=np.copy(colors[i]))
 
     # flatten to 2D point image
     point_map, normal_map, variance_map, _ = psdf.flatten()
-
-    point_map[..., 2] = point_map[..., 2]
     point_map = point_map @ config.T_volume_to_world[:3,:3].T + config.T_volume_to_world[:3, 3]
 
     # analysis
     normal_mask = normal_map[..., 2] > np.cos(config.gripper_angle_threshold/180*np.pi)
     variance_mask = variance_map < 1e-2
-    z_mask = point_map[:, :, 2] > 0.031
+    z_mask = point_map[:, :, 2] > 0.033
     final_mask = normal_mask * variance_mask * z_mask
     obj_ids = np.where(final_mask != 0)
     vision_dict = {"point_cloud": point_map,
                     "normal": -normal_map}
     graspable_map = analyser.analyse(vision_dict, obj_ids).astype(np.float32)
 
-    #display
+    # update grasp pose
+    grasp_position = config.init_position.copy()
+    score = compute_score(graspable_map, point_map,
+                            normal_map, grasp_position)
+    idx = np.argmax(score)
+    i, j = idx // config.volume_shape[0], idx % config.volume_shape[1]
+    grasp_position = point_map[i, j]
+    grasp_normal = normal_map[i, j]
+
     fig = plt.figure()
     ax = fig.add_subplot(231)
-    ax.imshow(depth)
+    ax.imshow(depths[0])
+    ax.set_title('input depth')
 
     ax = fig.add_subplot(232)
     ax.imshow(point_map[..., 2])
+    ax.set_title('height map')
 
     ax = fig.add_subplot(233)
     ax.imshow(graspable_map)
+    ax.set_title('grasp map')
     
+    ax = fig.add_subplot(235)
+    ax.imshow(point_map[..., 2])
+    ax.scatter(i, j, s=50, c='red', marker='o')
+    ax.set_title('height map with point mark')
+
+    ax = fig.add_subplot(236)
+    ax.imshow(graspable_map)
+    ax.scatter(i, j, s=50, c='red', marker='o')
+    ax.set_title('grasp map with point mark')
+
+    print(f'grasp position {grasp_position}, normal {grasp_normal}')
     plt.show()
-    #display
 
 def mp_display_point(verts):
   plt.style.use('_mpl-gallery')
