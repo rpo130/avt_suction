@@ -23,33 +23,6 @@ import matplotlib.pyplot as plt
 import pathlib
 
 
-cam_pose = np.array([
-        [
-          0.00034067232114859083,
-          -0.9999995162455708,
-          -0.0009227410224205568,
-          0.5999780841334658
-        ],
-        [
-          -0.9999996541527105,
-          -0.00033997198759511447,
-          -0.000759021414258895,
-          -2.0465263245762755e-05
-        ],
-        [
-          0.000758707340979496,
-          0.0009229992808800722,
-          -0.9999992862174947,
-          0.44998310911919037
-        ],
-        [
-          0.0,
-          0.0,
-          0.0,
-          1.0
-        ]
-      ])
-
 def compute_score(graspable_map, point_map, normal_map, position_pre):
     # current first
     dist_sigma = 0.05
@@ -112,6 +85,7 @@ def main():
 
     gcolor = None
     gdepth = None
+    gpose = None
 
     # init analyser
     analyser = VacuumCupAnalyser(radius=config.gripper_radius,
@@ -189,21 +163,28 @@ def main():
         while True:
             # get camera message
             # T_cam_to_world = get_camera_pose(arm, T_cam_to_tool0)
-            T_cam_to_world = np.array(cam_pose)
+            
+            # debug use, fast test
             if gcolor is None:
-                color, depth, dexdepth, K = nerf_camera('/home/amax_djh/code/ysl/nerf-pytorch/configs/avt_data_glass_13.txt', T_cam_to_world)
-                gcolor = color
-                gdepth = dexdepth
+                nerf_config = '/home/amax_djh/code/ysl/nerf-pytorch/configs/avt_data_glass_20230204_8.txt'
+                hwf,K,imgs,poses = nerf_info(nerf_config)
+                render_poses = poses[::5]
+                colors, depths, dexdepths, K = nerf_camera(nerf_config, render_poses)
+                depths = dexdepths
+
+                gcolor = colors
+                gdepth = depths
+                gpose = render_poses
             else:
-                color,depth = gcolor,gdepth
-
-            T_cam_to_volume = config.T_world_to_volume @ T_cam_to_world
-
-            # fuse new data to psdf
-            ts = time.time()
-            psdf.fuse(np.copy(depth), cam_intr,
-                      T_cam_to_volume, color=np.copy(color))
-            print("fuse time %f" % (time.time()-ts))
+                colors,depths,render_poses = gcolor, gdepth, gpose
+            
+            for i, p in enumerate(render_poses):
+                T_cam_to_world = p
+                T_cam_to_volume = config.T_world_to_volume @ T_cam_to_world
+                # fuse new data to psdf
+                ts = time.time()
+                psdf.fuse(np.copy(depths[i]), K, T_cam_to_volume, color=np.copy(colors[i]))
+                print("fuse time %f" % (time.time()-ts))
 
             # flatten to 2D point image
             ts = time.time()
@@ -417,9 +398,9 @@ def display():
                 device=DEVICE, with_color=True)
     print("PSDF initialized")
 
-    nerf_config = '/home/amax_djh/code/ysl/nerf-pytorch/configs/avt_data_glass_20230204_8.txt'
+    nerf_config = '/home/amax_djh/code/ysl/nerf-pytorch/configs/avt_data_glass_20230204_7.txt'
     hwf,K,imgs,poses = nerf_info(nerf_config)
-    render_poses = poses[::5]
+    render_poses = poses[::6]
     colors, depths, dexdepths, K = nerf_camera(nerf_config, render_poses)
     depths = dexdepths
     for i, p in enumerate(render_poses):
