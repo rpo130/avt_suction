@@ -27,8 +27,7 @@ SCRIPTS_FOLDER = PAPER_FOLDER/"scripts"
 TEMPLATE_FOLDER = SCRIPTS_FOLDER/"template"
 DATA_FOLDER = SCRIPTS_FOLDER/"data"
 
-ROOT_DIR = os.path.dirname(os.path.realpath(__file__))
-
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 RESULTS_DIR = os.path.join(ROOT_DIR, "results")
 NGP_DATA_FOLDER = os.environ.get("NGP_DATA_FOLDER") or os.path.join(ROOT_DIR, "data")
 
