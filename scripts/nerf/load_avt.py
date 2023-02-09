@@ -6,7 +6,12 @@ import json
 from scipy.spatial.transform import Rotation as R
 
 def load_avt_data(basedir, need_fix_pose=True):
-    with open(os.path.join(basedir, 'transforms.json'), 'r') as fp:
+
+    trans_file = os.path.join(basedir, 'transforms.json')
+    if not os.path.exists(trans_file):
+        trans_file = os.path.join(basedir, 'transforms_train.json')
+
+    with open(trans_file, 'r') as fp:
         meta = json.load(fp)
 
     all_imgs = []

@@ -21,6 +21,7 @@ from avt_grasp_tool.chart_utils import *
 import numpy as np
 import matplotlib.pyplot as plt
 import pathlib
+from avt_suction.nerf import nerf_info, nerf_camera
 
 
 def compute_score(graspable_map, point_map, normal_map, position_pre):
@@ -54,31 +55,6 @@ def get_camera_pose(arm, T_cam_to_tool0):
     T_tool0_to_world[:3, 3] = tool0_pose[:3]
     T_cam_to_world = T_tool0_to_world @ T_cam_to_tool0
     return T_cam_to_world
-
-def nerf_info(config_path):
-    from nerf.run_nerf import config_parser, load_avt_data
-    basedir = pathlib.Path(config_path).resolve().parent.parent
-
-    parser = config_parser()
-    args = parser.parse_args(f"--config {config_path}")
-
-    if not pathlib.Path(args.datadir).is_absolute():
-        args.datadir = os.path.join(basedir, args.datadir)
-
-    if args.ft_path is not None and not pathlib.Path(args.ft_path).is_absolute():
-        args.ft_path = os.path.join(basedir, args.ft_path)
-
-    if not pathlib.Path(args.basedir).is_absolute():
-        args.basedir = os.path.join(basedir, args.basedir)
-
-    hwf, K, imgs, poses = load_avt_data(args.datadir, False)
-    return hwf,K,imgs,poses
-
-def nerf_camera(config, T_c2ws):
-    from nerf.run_nerf import run
-    color, depth, dexdepth, K = run(config, T_c2ws)
-    return color, depth, dexdepth, K
-
 
 def main():
     from xela.XELA import XELA
@@ -166,11 +142,9 @@ def main():
             
             # debug use, fast test
             if gcolor is None:
-                nerf_config = '/home/amax_djh/code/ysl/nerf-pytorch/configs/avt_data_glass_20230204_8.txt'
-                hwf,K,imgs,poses = nerf_info(nerf_config)
+                hwf,K,poses = nerf_info()
                 render_poses = poses[::5]
-                colors, depths, dexdepths, K = nerf_camera(nerf_config, render_poses)
-                depths = dexdepths
+                colors, depths, K = nerf_camera(render_poses)
 
                 gcolor = colors
                 gdepth = depths
@@ -398,11 +372,9 @@ def display():
                 device=DEVICE, with_color=True)
     print("PSDF initialized")
 
-    nerf_config = '/home/amax_djh/code/ysl/nerf-pytorch/configs/avt_data_glass_20230204_7.txt'
-    hwf,K,imgs,poses = nerf_info(nerf_config)
+    hwf,K,poses = nerf_info()
     render_poses = poses[::6]
-    colors, depths, dexdepths, K = nerf_camera(nerf_config, render_poses)
-    depths = dexdepths
+    colors, depths, K = nerf_camera(render_poses)
     for i, p in enumerate(render_poses):
         T_cam_to_world = p
         T_cam_to_volume = config.T_world_to_volume @ T_cam_to_world
