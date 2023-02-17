@@ -218,7 +218,10 @@ class PSDF:
         height_map = psdf.positions[..., 2].take(z_flat)
         if smooth:
             import cv2 as cv
-            height_map = cv.bilateralFilter(height_map, ksize, sigmaColor, sigmaSpace)
+            height_map = height_map.cpu().numpy()
+            height_map = cv.GaussianBlur(height_map, ksize, sigmaSpace)
+            # height_map = cv.bilateralFilter(height_map, ksize, sigmaColor, sigmaSpace)
+            height_map = torch.Tensor(height_map)
 
         # get point map
         # (250,250,3)

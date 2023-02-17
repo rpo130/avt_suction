@@ -21,7 +21,7 @@ from avt_grasp_tool.chart_utils import *
 import numpy as np
 import matplotlib.pyplot as plt
 import pathlib
-from avt_suction.nerf import nerf_info, nerf_camera
+from avt_suction.nerf import nerf_info, nerf_camera, Nerf
 
 
 def compute_score(graspable_map, point_map, normal_map, position_pre):
@@ -80,9 +80,8 @@ def main():
     cup.release()
 
     # load camera config
-    with open(os.path.join(os.path.dirname(__file__), "../config/cam_info_realsense.json"), 'r') as f:
+    with open(os.path.join(os.path.dirname(__file__), "../../config/cam_info_realsense.json"), 'r') as f:
         cam_info = json.load(f)
-    cam_intr = np.array(cam_info["K"]).reshape(3, 3)
     T_cam_to_tool0 = np.array(cam_info["cam_to_tool0"]).reshape(4, 4)
 
     # init xela
@@ -103,8 +102,7 @@ def main():
     # touch T pose
     T_touch_to_tool0 = np.eye(4)
     T_touch_to_tool0[:3, 3] = [-(0.0805+0.0075), 0-(0.001+0.0075), 0.1711]
-    T_touch_to_tool0[:3, :3] = R.from_euler(
-        'xyz', [180, 0, 90], degrees=True).as_matrix()
+    T_touch_to_tool0[:3, :3] = R.from_euler('xyz', [180, 0, 90], degrees=True).as_matrix()
 
     # VaccumCup Parameter
     cup_radius = 0.01
@@ -142,9 +140,10 @@ def main():
             
             # debug use, fast test
             if gcolor is None:
-                hwf,K,poses = nerf_info()
-                render_poses = poses[::5]
-                colors, depths, K = nerf_camera(render_poses)
+                nerf = Nerf()
+                hwf,K,poses = nerf.nerf_info()
+                render_poses = poses[42:43]
+                colors, depths, K = nerf.nerf_camera(render_poses)
 
                 gcolor = colors
                 gdepth = depths
@@ -372,23 +371,31 @@ def display():
                 device=DEVICE, with_color=True)
     print("PSDF initialized")
 
-    hwf,K,poses = nerf_info()
-    render_poses = poses[::6]
-    colors, depths, K = nerf_camera(render_poses)
+
+    nerf = Nerf()
+    hwf,K,poses = nerf.nerf_info()
+    render_poses = poses[::40]
+    colors, depths, K = nerf.nerf_camera(render_poses)
     for i, p in enumerate(render_poses):
         T_cam_to_world = p
         T_cam_to_volume = config.T_world_to_volume @ T_cam_to_world
         # fuse new data to psdf
         psdf.fuse(np.copy(depths[i]), K, T_cam_to_volume, color=np.copy(colors[i]))
+        # plt.imshow(colors[i])
+        plt.imshow(depths[i])
+        plt.show()
+
+    v,f = psdf.get_point_cloud()
+    o3d_display_point(v)
 
     # flatten to 2D point image
-    point_map, normal_map, variance_map, _ = psdf.flatten()
+    point_map, normal_map, variance_map, _ = psdf.flatten(smooth=False)
     point_map = point_map @ config.T_volume_to_world[:3,:3].T + config.T_volume_to_world[:3, 3]
 
     # analysis
     normal_mask = normal_map[..., 2] > np.cos(config.gripper_angle_threshold/180*np.pi)
     variance_mask = variance_map < 1e-2
-    z_mask = point_map[:, :, 2] > 0.033
+    z_mask = point_map[:, :, 2] > 0.035
     final_mask = normal_mask * variance_mask * z_mask
     obj_ids = np.where(final_mask != 0)
     vision_dict = {"point_cloud": point_map,
@@ -454,5 +461,5 @@ def o3d_display_point(verts):
   open3d.visualization.draw_geometries([pcd, mesh_frame])
 
 if __name__ == '__main__':
-    # main()
-    display()
+    main()
+    # display()
