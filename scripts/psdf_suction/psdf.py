@@ -219,7 +219,7 @@ class PSDF:
         if smooth:
             import cv2 as cv
             height_map = height_map.cpu().numpy()
-            height_map = cv.GaussianBlur(height_map, ksize, sigmaSpace)
+            height_map = cv.GaussianBlur(height_map, (ksize, ksize), sigmaSpace)
             # height_map = cv.bilateralFilter(height_map, ksize, sigmaColor, sigmaSpace)
             height_map = torch.Tensor(height_map)
 
